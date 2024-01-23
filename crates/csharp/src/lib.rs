@@ -43,6 +43,8 @@ pub struct Opts {
     pub string_encoding: StringEncoding,
     #[cfg_attr(feature = "clap", arg(long))]
     pub generate_stub: bool,
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub generate_csproject: bool,
 
     // TODO: This should only temporarily needed until mono and native aot aligns.
     #[cfg_attr(feature = "clap", arg(short, long, value_enum))]
@@ -596,6 +598,24 @@ impl WorldGenerator for CSharp {
 
             if interface_type_and_fragments.is_export && self.opts.generate_stub {
                 generate_stub(format!("{name}"), files, Stubs::Interface(fragments));
+            }
+
+            if self.opts.generate_csproject {
+                #[cfg(feature = "mono")]
+                {
+                    let mut project =
+                    wit_bindgen_csharp::CSProject::new_mono(dir.to_path_buf(), &name, "the_world");
+                    project.clean();
+                    project.generate().unwrap();
+                }
+
+                #[cfg(feature = "aot")]
+                {
+                    let mut project = CSProject::new(dir.to_path_buf(), &name, "the_world");
+                    project.aot();
+                    project.clean();
+                    project.generate().unwrap();
+                }
             }
         }
     }

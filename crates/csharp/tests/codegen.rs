@@ -67,6 +67,7 @@ macro_rules! codegen_test {
                     #[cfg(any(all(target_os = "windows", feature = "aot"), feature = "mono"))]
                     wit_bindgen_csharp::Opts {
                         generate_stub: true,
+                        generate_csproject: true,
                         string_encoding: StringEncoding::UTF8,
                         #[cfg(all(target_os = "windows", feature = "aot"))]
                         runtime: Default::default(),

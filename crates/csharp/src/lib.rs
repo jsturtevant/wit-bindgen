@@ -10,9 +10,7 @@ use std::{
     ops::Deref,
 };
 use wit_bindgen_core::{
-    abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType},
-    wit_parser::LiveTypes,
-    Direction,
+    abi::{self, AbiVariant, Bindgen, Bitcast, Instruction, LiftLower, WasmType}, dealias, wit_parser::{Handle, LiveTypes}, Direction
 };
 use wit_bindgen_core::{
     uwrite, uwriteln,
@@ -112,6 +110,15 @@ pub struct CSharp {
     sizes: SizeAlign,
     interface_names: HashMap<InterfaceId, String>,
     anonymous_type_owners: HashMap<TypeId, TypeOwner>,
+    resources: HashMap<TypeId, ResourceInfo>,
+}
+
+#[derive(Default)]
+pub struct ResourceInfo {
+    pub direction: Direction,
+    own: String,
+    borrow: String,
+    drop_fn: String,
 }
 
 impl CSharp {
@@ -791,10 +798,6 @@ impl InterfaceGenerator<'_> {
     }
 
     fn import(&mut self, import_module_name: &str, func: &Function) {
-        if func.kind != FunctionKind::Freestanding {
-            todo!("resources");
-        }
-
         let sig = self.resolve.wasm_signature(AbiVariant::GuestImport, func);
 
         let wasm_result_type = match &sig.results[..] {
@@ -1119,6 +1122,16 @@ impl InterfaceGenerator<'_> {
                         let err = name(&result.err);
 
                         format!("Result<{ok}, {err}>")
+                    }
+                    TypeDefKind::Handle(Handle::Own(base_ty)) => {
+                        let name = self.type_name_with_qualifier(&Type::Id(*base_ty), true);
+                        let name = name.to_upper_camel_case();
+                        format!("I{}Own", name)
+                    }
+                    TypeDefKind::Handle(Handle::Borrow(base_ty)) => {
+                        let name = self.type_name_with_qualifier(&Type::Id(*base_ty), true);
+                        let name = name.to_upper_camel_case();
+                        format!("I{}Borrow", name)
                     }
                     _ => {
                         if let Some(name) = &ty.name {
@@ -1496,14 +1509,43 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
             TypeDefKind::Type(t) => self.type_alias(id, name, t, &ty.docs),
             TypeDefKind::Future(_) => todo!("generate for future"),
             TypeDefKind::Stream(_) => todo!("generate for stream"),
-            TypeDefKind::Resource => todo!("generate for resource"),
+            TypeDefKind::Resource => self.type_resource(id, name,  &ty.docs),
             TypeDefKind::Handle(_) => todo!("generate for handle"),
             TypeDefKind::Unknown => unreachable!(),
         }
     }
 
-    fn type_resource(&mut self, _id: TypeId, _name: &str, _docs: &Docs) {
-        todo!()
+    fn type_resource(&mut self, id: TypeId, name: &str, _docs: &Docs) {
+        let name = name.to_upper_camel_case();
+        let mut own = name.clone();
+        let mut borrow = own.clone();
+        own.push_str("Own");
+        borrow.push_str("Borrow");
+
+        uwrite!(
+            self.src,
+            "
+            public class {own} {{
+                public int Handle;
+            }}
+
+            public class {borrow} {{
+                public int Handle;
+            }}
+            "
+        );
+
+        let drop_fn = format!("{}.Dispose()", name);
+
+        self.gen.resources.insert(
+            id,
+            ResourceInfo {
+                own,
+                borrow,
+                direction: self.direction,
+                drop_fn,
+            },
+        );
     }
 }
 
@@ -1723,7 +1765,7 @@ impl Bindgen for FunctionBindgen<'_, '_> {
 
     fn emit(
         &mut self,
-        _resolve: &Resolve,
+        resolve: &Resolve,
         inst: &Instruction<'_>,
         operands: &mut Vec<String>,
         results: &mut Vec<String>,
@@ -2315,16 +2357,30 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             Instruction::GuestDeallocateVariant { .. } => todo!("GuestDeallocateString"),
 
             Instruction::GuestDeallocateList { .. } => todo!("GuestDeallocateList"),
-            Instruction::HandleLower {
-                handle: _,
-                name: _,
-                ty: _,
-            } => todo!(),
-            Instruction::HandleLift {
-                handle: _,
-                name: _,
-                ty: _dir,
-            } => todo!("HandleLeft"),
+            Instruction::HandleLower { .. } => {
+                let op = &operands[0];
+                results.push(format!("{op}.Handle"))
+            },
+            Instruction::HandleLift { handle, ty, .. } => match handle {
+                Handle::Borrow(resource)
+                    if matches!(
+                        self.gen.gen.resources[&dealias(resolve, *resource)].direction,
+                        Direction::Export
+                    ) =>
+                {
+                   todo!()
+                }
+                _ => {
+                    let op = &operands[0];
+                    let name = self.gen.type_name_with_qualifier(&Type::Id(*ty), true);
+                    let name = name.to_upper_camel_case();
+                    results.push(format!("new {name} {{ Handle = {op} }}"));
+
+                    if let Handle::Borrow(id) = handle {
+                        //todo
+                    }
+                }
+            },
         }
     }
 
